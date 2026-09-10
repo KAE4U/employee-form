@@ -3,23 +3,58 @@ package org.example;
 import com.formdev.flatlaf.FlatDarkLaf;
 import javax.swing.*;
 import javax.swing.border.*;
+import javax.swing.text.MaskFormatter;
 import java.awt.*;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
+import java.awt.dnd.DropTarget;
+import java.awt.dnd.DropTargetAdapter;
+import java.awt.dnd.DropTargetDropEvent;
+import java.awt.dnd.DnDConstants;
+import java.awt.datatransfer.DataFlavor;
 import java.io.File;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 
 public class FuncionarioForm extends JFrame {
 
     private final List<String> listaOcorrencias = new ArrayList<>();
 
+    // Cor de borda de erro usada na validacao visual
+    private static final Color COR_ERRO = new Color(220, 80, 80);
+    private static final Border BORDA_ERRO =
+            BorderFactory.createLineBorder(COR_ERRO, 2, true);
+
+    private static final Pattern PADRAO_EMAIL =
+            Pattern.compile("^[\\w.+-]+@[\\w-]+\\.[\\w.-]+$");
+
+    // Referencias aos campos que participam de mascara/validacao
+    private JFormattedTextField campoCpf;
+    private JFormattedTextField campoCpfDoc;
+    private JFormattedTextField campoCep;
+    private JFormattedTextField campoTelefone;
+    private JFormattedTextField campoCelular;
+    private JTextField campoEmail;
+
+    // Referencias da barra de status para atualizar feedback
+    private JPanel barraStatus;
+    private JLabel lblAberto;
+    private JLabel lblAtivo;
+    private JLabel lblFeedbackSalvar;
+
     public FuncionarioForm() {
         setTitle("Funcionários");
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent e) {
+                confirmarFechar();
+            }
+        });
         setSize(1050, 720);
         setLocationRelativeTo(null);
         setLayout(new BorderLayout());
@@ -100,24 +135,31 @@ public class FuncionarioForm extends JFrame {
                 BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(60, 64, 68)),
                 BorderFactory.createEmptyBorder(6, 10, 6, 10)
         ));
+        this.barraStatus = barra;
 
         JPanel esquerda = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        esquerda.setOpaque(false);
 
         JLabel lblStatusTag = new JLabel("Status:");
         lblStatusTag.setForeground(new Color(160, 165, 175));
         esquerda.add(lblStatusTag);
 
-        JLabel lblAberto = new JLabel("Aberto");
+        lblAberto = new JLabel("Aberto");
         lblAberto.setForeground(new Color(80, 200, 120));
         lblAberto.setFont(lblAberto.getFont().deriveFont(Font.BOLD));
         esquerda.add(lblAberto);
 
         JButton btnSalvar = new JButton("Salvar");
         btnSalvar.putClientProperty("JButton.buttonType", "accent");
+        btnSalvar.setMnemonic('S');
+        btnSalvar.setToolTipText("Validar e salvar (Alt+S / Enter)");
 
         JButton btnConcluir = new JButton("Concluir");
+        btnConcluir.setMnemonic('C');
         JButton btnExcluir = new JButton("Excluir");
+        btnExcluir.setMnemonic('E');
         JButton btnOcorrencia = new JButton("Ocorrência");
+        btnOcorrencia.setMnemonic('O');
 
         esquerda.add(btnSalvar);
         esquerda.add(btnConcluir);
@@ -128,20 +170,32 @@ public class FuncionarioForm extends JFrame {
         lblSituacaoTag.setForeground(new Color(160, 165, 175));
         esquerda.add(lblSituacaoTag);
 
-        JLabel lblAtivo = new JLabel("Ativo");
+        lblAtivo = new JLabel("Ativo");
         lblAtivo.setForeground(new Color(80, 200, 120));
         lblAtivo.setFont(lblAtivo.getFont().deriveFont(Font.BOLD));
         esquerda.add(lblAtivo);
 
         JPanel direita = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 2));
+        direita.setOpaque(false);
+
+        lblFeedbackSalvar = new JLabel(" ");
+        lblFeedbackSalvar.setForeground(new Color(160, 165, 175));
+        lblFeedbackSalvar.setFont(lblFeedbackSalvar.getFont().deriveFont(Font.PLAIN, 11f));
+        direita.add(lblFeedbackSalvar);
+
         JButton btnFechar = new JButton("Fechar");
+        btnFechar.setMnemonic('F');
         direita.add(btnFechar);
 
-        btnSalvar.addActionListener(e -> {
-            JOptionPane.showMessageDialog(this, "Dados salvos com sucesso!", "Salvar", JOptionPane.INFORMATION_MESSAGE);
-        });
+        btnSalvar.addActionListener(e -> salvar());
 
         btnConcluir.addActionListener(e -> {
+            // Só permite concluir se o cadastro estiver válido
+            List<String> erros = validarFormulario();
+            if (!erros.isEmpty()) {
+                mostrarErrosValidacao(erros);
+                return;
+            }
             lblAberto.setText("Concluído");
             lblAberto.setForeground(new Color(100, 180, 255));
             JOptionPane.showMessageDialog(this, "Cadastro do funcionário concluído com sucesso!", "Concluir", JOptionPane.INFORMATION_MESSAGE);
@@ -158,18 +212,64 @@ public class FuncionarioForm extends JFrame {
             if (resposta == JOptionPane.YES_OPTION) {
                 lblAtivo.setText("Inativo");
                 lblAtivo.setForeground(new Color(255, 99, 71));
+                // Reforça o estado com um leve destaque na barra
+                barraStatus.setBackground(new Color(58, 44, 44));
+                barraStatus.setOpaque(true);
+                barraStatus.repaint();
                 JOptionPane.showMessageDialog(this, "Funcionário excluído/inativado com sucesso.", "Excluir", JOptionPane.INFORMATION_MESSAGE);
             }
         });
 
         btnOcorrencia.addActionListener(e -> abrirJanelaOcorrencias());
 
-        btnFechar.addActionListener(e -> dispose());
+        btnFechar.addActionListener(e -> confirmarFechar());
+
+        // Enter aciona Salvar em qualquer lugar do formulário
+        getRootPane().setDefaultButton(btnSalvar);
 
         barra.add(esquerda, BorderLayout.WEST);
         barra.add(direita, BorderLayout.EAST);
 
         return barra;
+    }
+
+    /** Valida o formulário; se válido, mostra feedback de sucesso com horário. */
+    private void salvar() {
+        List<String> erros = validarFormulario();
+        if (!erros.isEmpty()) {
+            mostrarErrosValidacao(erros);
+            lblFeedbackSalvar.setText("Não salvo — verifique os campos");
+            lblFeedbackSalvar.setForeground(COR_ERRO);
+            return;
+        }
+        String hora = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm"));
+        lblFeedbackSalvar.setText("✓ Salvo às " + hora);
+        lblFeedbackSalvar.setForeground(new Color(80, 200, 120));
+        JOptionPane.showMessageDialog(this, "Dados salvos com sucesso!", "Salvar", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    /** Exibe um resumo dos erros de validação em uma caixa de diálogo. */
+    private void mostrarErrosValidacao(List<String> erros) {
+        StringBuilder sb = new StringBuilder("Corrija os seguintes campos antes de continuar:\n");
+        for (String erro : erros) {
+            sb.append("  • ").append(erro).append('\n');
+        }
+        JOptionPane.showMessageDialog(this, sb.toString(), "Validação", JOptionPane.WARNING_MESSAGE);
+    }
+
+    /** Pergunta antes de fechar, evitando perda acidental de dados. */
+    private void confirmarFechar() {
+        int resposta = JOptionPane.showConfirmDialog(
+                this,
+                "Deseja realmente fechar? Alterações não salvas serão perdidas.",
+                "Confirmar Saída",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.QUESTION_MESSAGE
+        );
+        if (resposta == JOptionPane.YES_OPTION) {
+            dispose();
+            System.exit(0);
+        }
     }
 
     private void abrirJanelaOcorrencias() {
@@ -232,7 +332,9 @@ public class FuncionarioForm extends JFrame {
         c.gridx = 1;
         c.gridy = 0;
         c.weightx = 0.25;
-        painel.add(new JTextField("99362643120"), c);
+        campoCpf = criarCampoCpf("99362643120");
+        campoCpf.setToolTipText("CPF do funcionário (11 dígitos)");
+        painel.add(campoCpf, c);
 
         c.gridx = 2;
         c.gridy = 0;
@@ -308,7 +410,9 @@ public class FuncionarioForm extends JFrame {
         cepPanel.add(new JLabel("CEP"), BorderLayout.NORTH);
 
         JPanel cepCampo = new JPanel(new BorderLayout(4, 0));
-        cepCampo.add(new JTextField("75900-055"), BorderLayout.CENTER);
+        campoCep = criarCampoComMascara("#####-###", "75900055");
+        campoCep.setToolTipText("CEP no formato 00000-000");
+        cepCampo.add(campoCep, BorderLayout.CENTER);
         JButton btnCep = new JButton("?");
         btnCep.setMargin(new Insets(2, 8, 2, 8));
         cepCampo.add(btnCep, BorderLayout.EAST);
@@ -339,17 +443,23 @@ public class FuncionarioForm extends JFrame {
         c.gridx = 1;
         c.gridy = 1;
         c.weightx = 0.20;
-        painel.add(rotuloComCampo("Telefone", new JTextField("(64)3613-5118")), c);
+        campoTelefone = criarCampoComMascara("(##)####-####", "6436135118");
+        campoTelefone.setToolTipText("Telefone fixo com DDD");
+        painel.add(rotuloComCampo("Telefone", campoTelefone), c);
 
         c.gridx = 2;
         c.gridy = 1;
         c.weightx = 0.20;
-        painel.add(rotuloComCampo("Telefone Cel.", new JTextField("(64)9286-1225")), c);
+        campoCelular = criarCampoComMascara("(##)#####-####", "64992861225");
+        campoCelular.setToolTipText("Celular com DDD");
+        painel.add(rotuloComCampo("Telefone Cel.", campoCelular), c);
 
         c.gridx = 3;
         c.gridy = 1;
         c.weightx = 0.30;
-        painel.add(rotuloComCampo("Email", new JTextField("karitta@gmail.com")), c);
+        campoEmail = new JTextField("karitta@gmail.com");
+        campoEmail.setToolTipText("E-mail do funcionário");
+        painel.add(rotuloComCampo("Email", campoEmail), c);
 
         return painel;
     }
@@ -656,7 +766,9 @@ public class FuncionarioForm extends JFrame {
         c.gridx = 0;
         c.gridy = 0;
         c.weightx = 1.0;
-        painel.add(rotuloComCampo("Número", new JTextField("99362643120")), c);
+        campoCpfDoc = criarCampoCpf("99362643120");
+        campoCpfDoc.setToolTipText("CPF do funcionário (11 dígitos)");
+        painel.add(rotuloComCampo("Número", campoCpfDoc), c);
 
         return painel;
     }
@@ -1072,7 +1184,34 @@ public class FuncionarioForm extends JFrame {
         foto.setBorder(criarBorda("Foto"));
 
         PainelFotoContainer fotoContainer = new PainelFotoContainer();
+        fotoContainer.setToolTipText("Clique em Selecionar ou arraste uma imagem aqui");
         foto.add(fotoContainer, BorderLayout.CENTER);
+
+        // Permite arrastar e soltar um arquivo de imagem sobre o painel da foto
+        new DropTarget(fotoContainer, DnDConstants.ACTION_COPY, new DropTargetAdapter() {
+            @Override
+            @SuppressWarnings("unchecked")
+            public void drop(DropTargetDropEvent evento) {
+                try {
+                    evento.acceptDrop(DnDConstants.ACTION_COPY);
+                    List<File> arquivos = (List<File>) evento.getTransferable()
+                            .getTransferData(DataFlavor.javaFileListFlavor);
+                    if (arquivos != null && !arquivos.isEmpty()) {
+                        BufferedImage img = ImageIO.read(arquivos.get(0));
+                        if (img != null) {
+                            fotoContainer.setImagem(img);
+                        } else {
+                            JOptionPane.showMessageDialog(FuncionarioForm.this,
+                                    "O arquivo arrastado não é uma imagem válida.", "Erro",
+                                    JOptionPane.ERROR_MESSAGE);
+                        }
+                    }
+                    evento.dropComplete(true);
+                } catch (Exception ex) {
+                    evento.dropComplete(false);
+                }
+            }
+        });
 
         JPanel botoesFoto = new JPanel(new FlowLayout(FlowLayout.CENTER, 6, 4));
         JButton selecionar = new JButton("Selecionar");
@@ -1103,7 +1242,19 @@ public class FuncionarioForm extends JFrame {
         });
 
         limpar.addActionListener(e -> {
-            fotoContainer.setImagem(null);
+            if (fotoContainer.getImagem() == null) {
+                return;
+            }
+            int resposta = JOptionPane.showConfirmDialog(
+                    this,
+                    "Deseja remover a foto do funcionário?",
+                    "Limpar Foto",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.QUESTION_MESSAGE
+            );
+            if (resposta == JOptionPane.YES_OPTION) {
+                fotoContainer.setImagem(null);
+            }
         });
 
         c.gridx = 0;
@@ -1142,6 +1293,128 @@ public class FuncionarioForm extends JFrame {
         aba.add(exames, c);
 
         return aba;
+    }
+
+    // ===================== Máscaras e validação =====================
+
+    /**
+     * Cria um campo formatado com a máscara informada.
+     * Ex.: "#####-###" para CEP, "(##)#####-####" para celular.
+     */
+    private JFormattedTextField criarCampoComMascara(String mascara, String valorInicial) {
+        try {
+            MaskFormatter formatador = new MaskFormatter(mascara);
+            formatador.setPlaceholderCharacter('_');
+            formatador.setValueContainsLiteralCharacters(false);
+            JFormattedTextField campo = new JFormattedTextField(formatador);
+            campo.setFocusLostBehavior(JFormattedTextField.COMMIT);
+            if (valorInicial != null) {
+                campo.setText(valorInicial);
+            }
+            return campo;
+        } catch (java.text.ParseException e) {
+            // Fallback seguro: se a máscara for inválida, devolve um campo simples
+            JFormattedTextField campo = new JFormattedTextField();
+            if (valorInicial != null) {
+                campo.setText(valorInicial);
+            }
+            return campo;
+        }
+    }
+
+    /** Campo de CPF com máscara 000.000.000-00. */
+    private JFormattedTextField criarCampoCpf(String somenteDigitos) {
+        return criarCampoComMascara("###.###.###-##", somenteDigitos);
+    }
+
+    /** Extrai apenas os dígitos de um texto (remove máscara/pontuação). */
+    private static String somenteDigitos(String texto) {
+        return texto == null ? "" : texto.replaceAll("\\D", "");
+    }
+
+    /** Valida um CPF pelos dígitos verificadores. */
+    private static boolean cpfValido(String cpf) {
+        String d = somenteDigitos(cpf);
+        if (d.length() != 11 || d.chars().distinct().count() == 1) {
+            return false;
+        }
+        try {
+            int[] num = new int[11];
+            for (int i = 0; i < 11; i++) {
+                num[i] = d.charAt(i) - '0';
+            }
+            int soma = 0;
+            for (int i = 0; i < 9; i++) {
+                soma += num[i] * (10 - i);
+            }
+            int dig1 = 11 - (soma % 11);
+            if (dig1 >= 10) {
+                dig1 = 0;
+            }
+            soma = 0;
+            for (int i = 0; i < 10; i++) {
+                soma += num[i] * (11 - i);
+            }
+            int dig2 = 11 - (soma % 11);
+            if (dig2 >= 10) {
+                dig2 = 0;
+            }
+            return dig1 == num[9] && dig2 == num[10];
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Marca um campo como inválido (borda vermelha) e adiciona o motivo à lista. */
+    private void marcarInvalido(JComponent campo, String motivo, List<String> erros) {
+        campo.setBorder(BORDA_ERRO);
+        campo.putClientProperty("erroTooltipOriginal", campo.getToolTipText());
+        campo.setToolTipText(motivo);
+        erros.add(motivo);
+    }
+
+    /** Restaura o campo ao estado válido (borda padrão). */
+    private void limparInvalido(JComponent campo) {
+        campo.setBorder(UIManager.getBorder("TextField.border"));
+        Object original = campo.getClientProperty("erroTooltipOriginal");
+        if (original instanceof String) {
+            campo.setToolTipText((String) original);
+        }
+    }
+
+    /**
+     * Executa a validação dos campos com regras (CPF e e-mail).
+     * Retorna a lista de mensagens de erro (vazia = tudo válido).
+     */
+    private List<String> validarFormulario() {
+        List<String> erros = new ArrayList<>();
+
+        // CPF (cabeçalho)
+        limparInvalido(campoCpf);
+        if (!cpfValido(campoCpf.getText())) {
+            marcarInvalido(campoCpf, "CPF inválido", erros);
+        }
+
+        // CPF (aba Documentação)
+        limparInvalido(campoCpfDoc);
+        if (!cpfValido(campoCpfDoc.getText())) {
+            marcarInvalido(campoCpfDoc, "CPF (Documentação) inválido", erros);
+        }
+
+        // E-mail
+        limparInvalido(campoEmail);
+        String email = campoEmail.getText().trim();
+        if (!email.isEmpty() && !PADRAO_EMAIL.matcher(email).matches()) {
+            marcarInvalido(campoEmail, "E-mail inválido", erros);
+        }
+
+        // CEP obrigatório completo
+        limparInvalido(campoCep);
+        if (somenteDigitos(campoCep.getText()).length() != 8) {
+            marcarInvalido(campoCep, "CEP incompleto", erros);
+        }
+
+        return erros;
     }
 
     private JPanel rotuloComCampo(String rotulo, JComponent campo) {
